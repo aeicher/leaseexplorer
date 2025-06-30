@@ -1,0 +1,6 @@
+Flask==2.3.3
+requests==2.31.0
+selenium==4.15.2
+undetected-chromedriver==3.5.4
+webdriver-manager==4.0.1
+beepy==1.0.7 
