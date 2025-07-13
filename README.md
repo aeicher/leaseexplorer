@@ -1,89 +1,106 @@
-# StreetEasier - NYC Rental Finder
+# Lease Explorer - NYC rental finder
 
-A web application that scrapes rental listings to help you find NYC apartments before they hit the market.
+## What this does for you
 
-## Features
+**🏠 Gets there first** - Scrapes listings real-time so you see apartments before they hit the market, based off of their last off-market date  
+**🗺️ Shows you where stuff actually is** - Interactive map with price markers 
+**🔍 Filters that work** - Listed by owner (to try and avoid broker fees), price, bedrooms, amenities, pet-friendly - what matters to you  
 
-- 🏠 Real-time rental listing scraper
-- 🗺️ Interactive map view with price markers
-- 🔍 Advanced filtering (price, bedrooms, amenities, etc.)
-- 📊 Rental market statistics
-- 🎯 Early access to off-market listings
-- 📱 Mobile-responsive design
+## Getting started
 
-## Setup
+### What you need first
+- Python 3.8 or newer (check with `python --version`)
+- Chrome browser (the scraper needs it to work its magic)
 
-### Prerequisites
+### Setting it up
 
-- Python 3.8+
-- Chrome browser (for web scraping)
-
-### Installation
-
-1. Clone the repository:
+**Step 1: Get the code**
 ```bash
 git clone <your-repo-url>
 cd leaseexplorer
 ```
 
-2. Install dependencies:
+**Step 2: Install the dependencies**
 ```bash
 pip install -r requirements.txt
 ```
 
-3. Set up environment variables:
+**Step 3: Get your API key**
+You'll need a free LocationIQ API key to turn addresses into map coordinates. Grab one from https://locationiq.com/ (it's free and takes 30 seconds).
+
+Then tell the app about it:
 ```bash
 export LOCATIONIQ_API_KEY="your_locationiq_api_key_here"
 ```
 
-Get your free LocationIQ API key from: https://locationiq.com/
-
-4. Run the application:
+**Step 4: Fire it up**
 ```bash
 python server.py
 ```
 
-5. Open http://localhost:5000 in your browser
+**Step 5: Start hunting**
+Open http://localhost:5000 and start finding your next apartment!
 
-## Usage
+## How to use it
 
-### Web Interface
-- Visit the web interface to view and filter rental listings
-- Use the map to see listing locations
-- Apply filters to narrow down results
+### The web interface
+You'll see all the listings on a map with prices, and you can filter by whatever matters to you. Click on any listing to see details, photos, and contact info.
 
-### Scraping New Data
-Use the web interface buttons or run the scraper directly:
+### Running the scraper manually
+Want to target a specific area? Hit the scraper directly:
 
 ```bash
 python scraper.py --area "west village" --min-price 2000 --max-price 5000
 ```
 
-### Available Areas
-- Manhattan neighborhoods (West Village, East Village, SoHo, etc.)
-- Brooklyn neighborhoods (Williamsburg, DUMBO, Park Slope, etc.)
-- Queens neighborhoods (LIC, Astoria, etc.)
+This is perfect for when you know exactly what neighborhood you want and don't want to wade through listings in areas you'd never live in.
 
-## Configuration
+### Areas that work
+I've tested this on most of the popular neighborhoods:
 
-### Environment Variables
-- `LOCATIONIQ_API_KEY`: API key for geocoding addresses
+**Manhattan:** West Village, East Village, SoHo, Tribeca, Chelsea, Hell's Kitchen, Upper East Side, Upper West Side, Financial District, and more
 
-### Scraper Options
-- `--area`: Target neighborhood
-- `--min-price`: Minimum rent price
-- `--max-price`: Maximum rent price
-- `--bedrooms`: Number of bedrooms
-- `--workers`: Number of concurrent workers
+**Brooklyn:** Williamsburg, DUMBO, Park Slope, Bushwick, Bed-Stuy, Crown Heights, Prospect Heights, Brooklyn Heights
 
-## Legal Notice
+**Queens:** Long Island City, Astoria, Sunnyside, Forest Hills
 
-This tool is for educational and personal use only. Please respect the terms of service of any websites you scrape and use responsibly.
+If there's a neighborhood missing that you care about, let me know and I can add it.
 
-## Contributing
+## Customizing your search
 
-Pull requests are welcome. For major changes, please open an issue first to discuss what you would like to change.
+### Environment settings
+- `LOCATIONIQ_API_KEY`: Your geocoding API key (required for the map to work)
+
+### Scraper options
+When you run the scraper manually, you can get specific:
+
+- `--area`: Which neighborhood to focus on
+- `--min-price`: Don't waste time on places you can't afford
+- `--max-price`: Don't waste time on places that are overpriced
+- `--bedrooms`: Studios, 1BR, 2BR, whatever you need
+- `--workers`: How many concurrent scrapers to run (more = faster, but be nice to the servers)
+
+## The fine print
+
+This tool is for personal use and educational purposes only. I built it to help people find apartments, not to overwhelm sites with requests. Please be respectful and don't use this to spam landlords or create fake inquiries.
+
+## Want to contribute?
+
+I'm always looking to make this better! Found a bug? Want to add a new neighborhood? Have an idea for a better filter?
+
+1. Fork the repo
+2. Create a branch for your feature
+3. Make your changes
+4. Test it out (especially if you're adding new scraping targets)
+5. Submit a pull request
+
+If you're planning something big, open an issue first so we can chat about it. I'm pretty responsive and love hearing ideas from other apartment hunters.
+
+## A few tips from someone who's been there
+
+- **Set up realistic filters** - Don't filter so aggressively that you miss out on some good listings
+- **Have your documents ready** - Bank statements, references, application fee - have it all ready to go
 
 ## License
 
-This project is licensed under the MIT License. 
+MIT License.

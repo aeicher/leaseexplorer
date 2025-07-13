@@ -246,7 +246,7 @@ class RentalCollector:
             return [], {}
 
     def get_building_ids_from_area(self, area):
-        """Get building IDs from area page with progress tracking"""
+        """Get building IDs from StreetEasy area page with progress tracking"""
         building_ids = []
         self.building_info = {}
         
@@ -264,6 +264,22 @@ class RentalCollector:
             current_url = self.driver.current_url
             page_title = self.driver.title.lower()
             page_source = self.driver.page_source.lower()
+            
+            # Check for various blocking indicators
+            # if ("access to this page has been denied" in page_source or 
+            #     "blocked" in page_title or 
+            #     "captcha" in page_title or
+            #     current_url != base_url or
+            #     f"buildings/{area_slug}" not in current_url):
+            #     print(f"🚫 Unable to access West Village buildings page. URL: {current_url}")
+            #     print(f"   Page title: {self.driver.title}")
+            #     if "access to this page has been denied" in page_source:
+            #         print("   Reason: Access denied (bot detection)")
+            #     elif current_url != base_url:
+            #         print(f"   Reason: Redirected from {base_url} to {current_url}")
+            #     else:
+            #         print("   Reason: Page blocked or inaccessible")
+            #     return building_ids  # Return empty list instead of scraping wrong area
             
             # Handle any captcha that appears during discovery
             if "Press & Hold to confirm" in self.driver.page_source:
@@ -314,7 +330,10 @@ class RentalCollector:
 
             print(f"📄 Total pages to scrape: {total_pages}")
             
-
+            # TESTING LIMIT - Only scrape first 5 pages for debugging
+            # if total_pages > 5:
+            #     print(f"🧪 TESTING MODE: Limiting to 5 pages instead of {total_pages} for faster testing")
+            #     total_pages = 5
                     
             # Write initial status
             write_status('running', 
@@ -335,8 +354,13 @@ class RentalCollector:
             
             # Go through each page
             page = 1
+            # max_debug_pages = 25  # DEBUG: Limit to 25 pages max
             
             while page <= total_pages:
+                # DEBUG: Stop after 25 pages for debugging
+                # if page > max_debug_pages:
+                #     print(f"🧪 DEBUG: Hit max debug page limit of {max_debug_pages}. Stopping early.")
+                #     break
                 
                 # Check if user requested stop
                 if getattr(self, 'stop_requested', False) or check_stop_signal():
@@ -459,7 +483,7 @@ class RentalCollector:
                                     'href': href,
                                     'address': address
                                 }
-
+                                # print(f"Added building: {slug} - {address}")
                         except Exception as e:
                             continue
                     
@@ -816,6 +840,193 @@ class RentalCollector:
             
             return None
 
+        def _detect_owner_comprehensive(rental_id: str) -> tuple:
+            """
+            Comprehensive owner detection using multiple StreetEasy API fields
+            Returns: (is_owner: bool, detection_method: str, confidence: int, agent_info: dict)
+            """
+            if not rental_id:
+                return False, 'no_rental_id', 0, {}
+                
+            try:
+                # Comprehensive query to get all owner-related fields
+                owner_query = {
+                    "query": """
+                    query GetListingOwnerInfo($id: ID!) {
+                        rentalByListingId(id: $id) {
+                            id
+                            legacy {
+                                sourceGroupLabel
+                            }
+                            backOffice {
+                                ownerPaysFee
+                                collectYourOwnFee
+                                exclusivity {
+                                    type
+                                }
+                            }
+                            description
+                        }
+                        getAgentsForRentalExpress(id: $id) {
+                            id
+                            name
+                            email
+                            phone
+                            sourceGroupLabel
+                        }
+                    }
+                    """,
+                    "variables": {"id": str(rental_id)}
+                }
+                
+                response = self.session.post(
+                    'https://api-v6.streeteasy.com/',
+                    json=owner_query,
+                    timeout=10
+                )
+                
+                if response.status_code != 200:
+                    return False, 'api_error', 0, {}
+                
+                data = response.json()
+                
+                if 'errors' in data:
+                    return False, 'api_error', 0, {}
+                
+                # Extract listing data
+                listing_data = data.get('data', {}).get('rentalByListingId')
+                agents_data = data.get('data', {}).get('getAgentsForRentalExpress', [])
+                
+                if not listing_data:
+                    return False, 'no_listing_data', 0, {}
+                
+                # Prepare agent info for return
+                agent_info = {}
+                if agents_data:
+                    # Take the first agent's info (usually the primary contact)
+                    primary_agent = agents_data[0]
+                    agent_info = {
+                        'name': primary_agent.get('name', ''),
+                        'email': primary_agent.get('email', ''),
+                        'phone': primary_agent.get('phone', ''),
+                        'source_group': primary_agent.get('sourceGroupLabel', ''),
+                        'agent_count': len(agents_data)
+                    }
+                    
+                    # If there are multiple agents, store them all
+                    if len(agents_data) > 1:
+                        agent_info['all_agents'] = [
+                            {
+                                'name': agent.get('name', ''),
+                                'email': agent.get('email', ''),
+                                'phone': agent.get('phone', ''),
+                                'source_group': agent.get('sourceGroupLabel', '')
+                            }
+                            for agent in agents_data
+                        ]
+                
+                # Extract key fields
+                source_group_label = listing_data.get('legacy', {}).get('sourceGroupLabel', '')
+                back_office = listing_data.get('backOffice', {})
+                owner_pays_fee = back_office.get('ownerPaysFee')
+                collect_your_own_fee = back_office.get('collectYourOwnFee')
+                exclusivity_type = back_office.get('exclusivity', {}).get('type') if back_office.get('exclusivity') else None
+                description = listing_data.get('description', '')
+                
+                # TIER 1: Corporate exclusions first (to override owner_pays_fee for known brokerages)
+                
+                # Check for corporate indicators in source group FIRST
+                if source_group_label:
+                    source_lower = source_group_label.lower()
+                    corporate_indicators = [
+                        'realty', 'real estate', 'broker', 'brokerage', 'group', 'inc', 'llc',
+                        'associates', 'properties', 'team', 'agency', 'company', 'corp',
+                        'management', 'residential', 'commercial', 'advisors', 'partners',
+                        'consultants', 'solutions', 'corcoran', 'compass', 'elliman',
+                        'sotheby', 'halstead', 'warburg', 'nest', 'bond', 'tabak',
+                        'brown harris', 'miron', 'serhant', 'living new york'
+                    ]
+                    
+                    if any(indicator in source_lower for indicator in corporate_indicators):
+                        return False, 'corporate_source_group', 0, agent_info
+                
+                # Check agents for corporate indicators FIRST
+                if agents_data:
+                    for agent in agents_data:
+                        agent_email = agent.get('email', '').lower()
+                        agent_source_group = agent.get('sourceGroupLabel', '').lower()
+                        
+                        # Corporate email domains
+                        corporate_domains = [
+                            'corcoran.com', 'compass.com', 'elliman.com', 'sothebys.com',
+                            'halstead.com', 'warburgrealty.com', 'nest.com', 'bondny.com',
+                            'brownharris.com', 'miron-properties.com', 'serhant.com', 'livingny.com'
+                        ]
+                        
+                        if any(domain in agent_email for domain in corporate_domains):
+                            return False, 'corporate_agent_email', 0, agent_info
+                        
+                        # Corporate source group
+                        if any(indicator in agent_source_group for indicator in corporate_indicators):
+                            return False, 'corporate_agent_source', 0, agent_info
+
+                # TIER 2: Explicit owner indicators (95% confidence) - AFTER corporate exclusions
+                
+                # Check if owner pays fee (strong indicator)
+                if owner_pays_fee is True:
+                    return True, 'owner_pays_fee', 95, agent_info
+                
+                # Check for explicit "owner" mentions in source group
+                if source_group_label and 'owner' in source_group_label.lower():
+                    return True, 'source_group_owner', 95, agent_info
+                
+                # Check for "For Rent By Owner" patterns
+                if (source_group_label and 
+                    ('for rent by owner' in source_group_label.lower() or 
+                     'rent by owner' in source_group_label.lower() or
+                     'by owner' in source_group_label.lower())):
+                    return True, 'source_group_by_owner', 95, agent_info
+                
+                # Check description for owner indicators
+                if description:
+                    desc_lower = description.lower()
+                    if any(phrase in desc_lower for phrase in [
+                        'posted by owner', 'listed by owner', 'rent by owner', 
+                        'for rent by owner', 'owner listing', 'direct from owner',
+                        'no broker fee', 'no brokerage fee'
+                    ]):
+                        return True, 'description_owner_indicators', 90, agent_info
+                
+                # TIER 3: Agent-based detection (85% confidence)
+                
+                # Check agents for owner indicators
+                if agents_data:
+                    for agent in agents_data:
+                        agent_name = agent.get('name', '').lower()
+                        agent_email = agent.get('email', '').lower()
+                        agent_source_group = agent.get('sourceGroupLabel', '').lower()
+                        
+                        # Explicit owner mentions in agent data
+                        if ('owner' in agent_name or 'owner' in agent_email or 
+                            'owner' in agent_source_group):
+                            return True, 'agent_owner_explicit', 85, agent_info
+                        
+                        # Check for personal email domains with individual names
+                        personal_domains = ['@gmail.', '@yahoo.', '@hotmail.', '@outlook.', '@aol.', '@me.', '@icloud.']
+                        if any(domain in agent_email for domain in personal_domains):
+                            # Check if this looks like an individual vs company
+                            if agent_source_group:
+                                # If source group is just the person's name or similar, likely owner
+                                name_parts = agent_name.split()
+                                if len(name_parts) >= 2 and agent_source_group in agent_name:
+                                    return True, 'agent_personal_individual', 75, agent_info
+                
+                # TIER 4: Default - insufficient data
+                return False, 'insufficient_data', 0, agent_info
+                
+            except Exception as e:
+                return False, 'api_exception', 0, {}
+
         def _detect_owner_from_agent_api(rental_id: str) -> bool:
             """
             Detect owner listings using the getAgentsForRentalExpress API
@@ -942,190 +1153,24 @@ class RentalCollector:
                         formatted_rental['ownerName'] = owner_info.get('name')
                         formatted_rental['ownerPhone'] = owner_info.get('phoneNumber')
                     
-                    # Enhanced owner detection with multiple methods
-                    is_owner = False
-                    detection_method = 'none'
-                    confidence_score = 0
-                    
-                    # Extract relevant data for detection
-                    agent_name = formatted_rental.get('agentName', '') or ''
-                    agent_email = formatted_rental.get('agentEmail', '') or ''
-                    
-                    # Method 1: Basic agent name check
-                    if 'owner' in agent_name.lower():
-                        is_owner = True
-                        detection_method = 'agent_name'
-                        confidence_score = 95
-                    
-                    # Method 2: Check if ownerContactInfo is present
-                    elif owner_info is not None:
-                        is_owner = True
-                        detection_method = 'owner_contact'
-                        confidence_score = 90
-                    
-                    # Method 3: Enhanced pattern-based detection
-                    elif agent_name or agent_email:
-                        pattern_indicators = []
-                        
-                        # Check for personal email domains
-                        personal_domains = [
-                            '@gmail.', '@aol.', '@yahoo.', '@hotmail.', '@outlook.', '@me.', '@icloud.',
-                            '@earthlink.', '@comcast.', '@verizon.', '@att.net', '@sbcglobal.'
-                        ]
-                        
-                        if any(domain in agent_email.lower() for domain in personal_domains):
-                            pattern_indicators.append("personal_email_domain")
-                            confidence_score += 30
-                        
-                        # Exclude if email is from known real estate companies
-                        real_estate_domains = [
-                            'corcoran.com', 'elliman.com', 'compass.com', 'sothebys.com', 'realtor.com',
-                            'keller', 'coldwell', 'remax', 'century21', 'cbcommercial', 'warburg'
-                        ]
-                        
-                        has_real_estate_domain = any(domain in agent_email.lower() for domain in real_estate_domains)
-                        if has_real_estate_domain:
-                            pattern_indicators = []  # Clear indicators if it's from a known real estate company
-                            confidence_score = 0
-                        
-                        # Check for simple personal name format (no corporate indicators)
-                        corporate_keywords = [
-                            'realty', 'group', 'inc', 'llc', 'corp', 'company', 'associates', 
-                            'properties', 'real estate', 'broker', 'brokerage', 'team', 'agency'
-                        ]
-                        
-                        name_words = agent_name.lower().split()
-                        if (len(name_words) >= 2 and len(name_words) <= 3 and 
-                            not any(keyword in agent_name.lower() for keyword in corporate_keywords)):
-                            pattern_indicators.append("simple_personal_name")
-                            confidence_score += 25
-                        
-                        # Check email username patterns that suggest owner
-                        if agent_email:
-                            email_username = agent_email.split('@')[0].lower()
-                            name_parts = [part.lower() for part in agent_name.split()]
-                            
-                            # If email username closely matches agent name, likely personal
-                            if any(part in email_username for part in name_parts if len(part) > 2):
-                                pattern_indicators.append("email_matches_name")
-                                confidence_score += 20
-                        
-                        # Determine if pattern-based detection indicates owner
-                        if len(pattern_indicators) >= 2:  # Require at least 2 indicators
-                            is_owner = True
-                            detection_method = f"pattern_analysis_{'+'.join(pattern_indicators)}"
-                            confidence_score = min(confidence_score, 85)  # Cap at 85% for pattern-based
-                    
-                    # Method 4: Use getAgentsForRentalExpress API with BALANCED detection logic
-                    if not is_owner and rental.get('id'):
-                        rental_id = rental.get('id')
-                        try:
-                            agents_query = {
-                                "query": """
-                                query GetAgentsForRental($id: ID!) {
-                                    getAgentsForRentalExpress(id: $id) {
-                                        id
-                                        name
-                                        email
-                                    }
-                                }
-                                """,
-                                "variables": {"id": str(rental_id)}
-                            }
-                            
-                            response = self.session.post(
-                                'https://api-v6.streeteasy.com/',
-                                json=agents_query,
-                                timeout=10
-                            )
-                            
-                            if response.status_code == 200:
-                                data = response.json()
-                                if 'data' in data and data['data']:
-                                    agents = data['data'].get('getAgentsForRentalExpress', [])
-                                    if agents:
-                                        for agent in agents:
-                                            agent_name = agent.get('name', '')
-                                            agent_email = agent.get('email', '')
-                                            
-                                            # Apply BALANCED detection logic
-                                            name_lower = agent_name.lower()
-                                            email_lower = agent_email.lower()
-                                            
-                                            # TIER 1: Explicit owner indicators (95% confidence)
-                                            if ('owner' in name_lower or 'owner' in email_lower or 
-                                                (name_lower == email_lower and '@' in name_lower)):
-                                                is_owner = True
-                                                detection_method = 'agent_api_explicit'
-                                                confidence_score = 95
-                                                formatted_rental['agentName'] = agent_name
-                                                formatted_rental['agentEmail'] = agent_email
-                                                break
-                                            
-                                            # TIER 2: Check for corporate indicators (NOT owner)
-                                            corporate_domains = [
-                                                'corcoran.com', 'compass.com', 'elliman.com', 'sothebys.com',
-                                                'halstead.com', 'warburgrealty.com', 'nest.com', 'bondny.com',
-                                                'tabak'  # Include tabak for James Attard case
-                                            ]
-                                            corporate_keywords = [
-                                                'realty', 'real estate', 'broker', 'brokerage', 'group', 'inc', 'llc', 
-                                                'associates', 'properties', 'team', 'agency', 'company', 'corp',
-                                                'management', 'property', 'residential', 'commercial', 'licensed'
-                                            ]
-                                            
-                                            # Check for corporate indicators
-                                            if (any(domain in email_lower for domain in corporate_domains) or
-                                                any(keyword in name_lower for keyword in corporate_keywords)):
-                                                # This is a corporate listing, NOT an owner
-                                                is_owner = False
-                                                detection_method = 'agent_api_corporate'
-                                                confidence_score = 0
-                                                formatted_rental['agentName'] = agent_name
-                                                formatted_rental['agentEmail'] = agent_email
-                                                break
-                                            
-                                            # TIER 3: Personal email with name matching (85% confidence)
-                                            personal_domains = ['@gmail.', '@yahoo.', '@hotmail.', '@outlook.', '@aol.', '@me.', '@icloud.']
-                                            if any(domain in email_lower for domain in personal_domains):
-                                                # Check if name matches email username
-                                                if '@' in agent_email:
-                                                    email_username = agent_email.split('@')[0].lower()
-                                                    name_clean = ''.join(c for c in agent_name.lower() if c.isalpha())
-                                                    
-                                                    # Check for name-email match (like "Huw Griffin" with "huwgriffin@me.com")
-                                                    if (name_clean in email_username or email_username in name_clean or
-                                                        len(set(name_clean) & set(email_username)) / max(len(name_clean), len(email_username), 1) > 0.6):
-                                                        is_owner = True
-                                                        detection_method = 'agent_api_personal_match'
-                                                        confidence_score = 85
-                                                        formatted_rental['agentName'] = agent_name
-                                                        formatted_rental['agentEmail'] = agent_email
-                                                        break
-                                                
-                                                # Personal email but no name match = likely broker with personal email
-                                                is_owner = False
-                                                detection_method = 'agent_api_personal_no_match'
-                                                confidence_score = 0
-                                                formatted_rental['agentName'] = agent_name
-                                                formatted_rental['agentEmail'] = agent_email
-                                                break
-                                            
-                                            # Default: Not enough info to determine ownership
-                                            is_owner = False
-                                            detection_method = 'agent_api_insufficient'
-                                            confidence_score = 0
-                                            formatted_rental['agentName'] = agent_name
-                                            formatted_rental['agentEmail'] = agent_email
-                                            break
-                                    # No agents returned - be conservative, don't assume owner
-                                    # (Many broker listings also return no agents)
-                        except Exception:
-                            pass  # Silent fail to avoid breaking the scraper
+                    # Enhanced owner detection with multiple methods - IMPROVED APPROACH
+                    is_owner, detection_method, confidence_score, agent_info = _detect_owner_comprehensive(rental.get('id'))
                     
                     formatted_rental['is_owner'] = is_owner
                     formatted_rental['owner_detection_method'] = detection_method
                     formatted_rental['owner_detection_confidence'] = confidence_score
+                    
+                    # Add agent/contact information
+                    if agent_info:
+                        formatted_rental['agent_name'] = agent_info.get('name', '')
+                        formatted_rental['agent_email'] = agent_info.get('email', '')
+                        formatted_rental['agent_phone'] = agent_info.get('phone', '')
+                        formatted_rental['agent_source_group'] = agent_info.get('source_group', '')
+                        formatted_rental['agent_count'] = agent_info.get('agent_count', 0)
+                        
+                        # If there are multiple agents, store them all
+                        if agent_info.get('all_agents'):
+                            formatted_rental['all_agents'] = agent_info['all_agents']
 
                     # Add a flag indicating if owner/agent info is present from API
                     formatted_rental['has_owner_agent_info'] = (agent is not None or owner_info is not None)
@@ -1377,19 +1422,10 @@ class RentalCollector:
                     elif bedrooms_filter.isdigit() and int(bedrooms_filter) != bedrooms:
                         return False
                 
-                # Agent/Owner filter
+                # Agent/Owner filter - Use the improved detection from _process_rentals
                 if by_owner_filter != 'all':
-                    # Only apply if owner/agent info is present
-                    if not listing.get('has_owner_agent_info', False):
-                        # Log a warning (only once per run, so use a global or static var)
-                        if not hasattr(apply_all_filters, '_warned_missing_owner_agent'):
-                            print("⚠️  Some listings do not have owner/agent info (likely due to minimal query fallback). Skipping by_owner filter for these listings.")
-                            apply_all_filters._warned_missing_owner_agent = True
-                        # Skip by_owner filter for this listing
-                        return True
-                    agent_name = listing.get('agentName', '') or ''
-                    owner_info = listing.get('ownerContactInfo')
-                    is_owner = 'owner' in agent_name.lower() or owner_info is not None
+                    # Use the is_owner field that was calculated with improved logic
+                    is_owner = listing.get('is_owner', False)
                     if by_owner_filter == 'true' and not is_owner:
                         return False
                     elif by_owner_filter == 'false' and is_owner:
@@ -1497,7 +1533,7 @@ class RentalCollector:
                     listing['stabilization_confidence'] = ''
                     listing['stabilization_evidence'] = ''
                     
-                    # If already marked as rent stabilized
+                    # If already marked as rent stabilized by StreetEasy
                     if listing.get('isRentStabilized'):
                         listing['likely_stabilized'] = True
                         listing['stabilization_confidence'] = 'High'
